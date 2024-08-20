@@ -1,0 +1,160 @@
+pipeline {
+    agent any
+    environment {
+        PREVIOUS_SUCCESSFUL_COMMIT = ''
+        CURRENT_COMMIT = ''
+        DEPLOY_TO = ''
+        BATCH_JOBS_UPDATED = false
+        DICLE_LANDING_PAGE_UPDATED = false
+        ZAND_LANDING_PAGE_UPDATED = false
+        FLOWWORKS_SERVER_UPDATED = false
+        FLOWWORKS_USER_WEBSITE_UPDATED = false
+        FLOWWORKS_ADMIN_WEBSITE_UPDATED = false
+        NCLOUD_SERVER_UPDATED = false
+    }
+    stages {
+        stage('Setup') {
+            steps {
+                script {
+                    // Get the current commit hash
+                    env.CURRENT_COMMIT = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+                    
+                    // Get the commit hash of the last successful build
+                    env.PREVIOUS_SUCCESSFUL_COMMIT = sh(
+                        script: """
+                            git rev-list -n 1 \$(git describe --tags --abbrev=0)
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Current commit: ${env.CURRENT_COMMIT}"
+                    echo "Previous successful commit: ${env.PREVIOUS_SUCCESSFUL_COMMIT}"
+                    
+                    // Determine the deployment environment
+                    if (env.BRANCH_NAME == 'master') {
+                        DEPLOY_TO = 'prod'
+                    } else if (env.BRANCH_NAME == 'develop') {
+                        DEPLOY_TO = 'dev'
+                    } else if (env.BRANCH_NAME == 'qa') {
+                        DEPLOY_TO = 'qa'
+                    }
+                    
+                    echo "DEPLOY_TO: ${DEPLOY_TO}"
+                }
+            }
+        }
+        stage('Change Detection') {
+            steps {
+                script {
+                    // Check for changes in the project directories
+                    def batchJobsChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- memvers/batch_jobs || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    BATCH_JOBS_UPDATED = (batchJobsChanged == "changed")
+                    
+                    def dicleLandingPageChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- dicle/landing_website || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    DICLE_LANDING_PAGE_UPDATED = (dicleLandingPageChanged == "changed")
+                    
+                    def zandLandingPageChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- zand/landing_website || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    ZAND_LANDING_PAGE_UPDATED = (zandLandingPageChanged == "changed")
+                    
+                    def flowworksServerChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- flowworks/server || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    FLOWWORKS_SERVER_UPDATED = (flowworksServerChanged == "changed")
+                    
+                    def flowworksUserWebsiteChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- flowworks/user_website || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    FLOWWORKS_USER_WEBSITE_UPDATED = (flowworksUserWebsiteChanged == "changed")
+                    
+                    def flowworksAdminWebsiteChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- flowworks/admin_website || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    FLOWWORKS_ADMIN_WEBSITE_UPDATED = (flowworksAdminWebsiteChanged == "changed")
+                    
+                    def ncloudServerChanged = sh(
+                        script: """
+                            git diff --quiet ${env.PREVIOUS_SUCCESSFUL_COMMIT}..${env.CURRENT_COMMIT} -- ncloudserver || echo "changed"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    NCLOUD_SERVER_UPDATED = (ncloudServerChanged == "changed")
+                }
+            }
+        }
+        stage('Build and Deploy') {
+            steps {
+                script {
+                    // Deploy ZAND landing page
+                    if (ZAND_LANDING_PAGE_UPDATED) {
+                        slackSend(channel: "배포", message: "[${env.BRANCH_NAME}][ZAND_LANDING_PAGE] 배포중...")
+                        if (env.BRANCH_NAME == 'master') {
+                            sh "./scripts/deploy_zand_website.sh ${DEPLOY_TO}"
+                        }
+                        slackSend(color: "good", channel: "배포", message: "[${env.BRANCH_NAME}][ZAND_LANDING_PAGE] 배포 완료.")
+                    }
+                    
+                    // Build and deploy FlowWorks server
+                    if (FLOWWORKS_SERVER_UPDATED && env.BRANCH_NAME == 'master') {
+                        slackSend(channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_SERVER] 빌드중...")
+                        sh "./scripts/build_server_ecs.sh ${DEPLOY_TO}"
+                        slackSend(color: "good", channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_SERVER] 빌드 완료.")
+                    }
+                    
+                    // Build and deploy FlowWorks user website
+                    if (FLOWWORKS_USER_WEBSITE_UPDATED) {
+                        slackSend(channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_USER_WEBSITE] 빌드중...")
+                        if (env.BRANCH_NAME == 'develop') {
+                            sh "./scripts/deploy_flowworks_user_website.sh ${DEPLOY_TO}"
+                        } else if (env.BRANCH_NAME == 'master') {
+                            sh "./scripts/deploy_website_ecs.sh ${DEPLOY_TO}"
+                        }
+                        slackSend(color: "good", channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_USER_WEBSITE] 빌드 완료.")
+                    }
+                    
+                    // Build and deploy FlowWorks admin website
+                    if (FLOWWORKS_ADMIN_WEBSITE_UPDATED) {
+                        slackSend(channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_ADMIN_WEBSITE] 배포중...")
+                        sh "./scripts/deploy_flowworks_admin_website.sh ${DEPLOY_TO}"
+                        slackSend(color: "good", channel: "배포", message: "[${env.BRANCH_NAME}][FLOWWORKS_ADMIN_WEBSITE] 배포 완료.")
+                    }
+                    
+                    // Deploy NCloud server
+                    if (NCLOUD_SERVER_UPDATED && env.BRANCH_NAME == 'master') {
+                        slackSend(channel: "배포", message: "[${env.BRANCH_NAME}][NCLOUD_SERVER] 배포중...")
+                        sh "./scripts/deploy_ncloudserver.sh"
+                        slackSend(color: "good", channel: "배포", message: "[${env.BRANCH_NAME}][NCLOUD_SERVER] 배포 완료.")
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
