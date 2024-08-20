@@ -1,0 +1,53 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_ACCESS_KEY_ID = credentials('indinity_awsAccessKeyID')
+        AWS_SECRET_ACCESS_KEY = credentials('indinity_awsSecretAccessKey')
+        AWS_DEFAULT_REGION = 'ap-northeast-2'
+    }
+
+    stages {
+        stage('Decide Deploy To') {
+            steps {
+                script {
+                    if (env.BRANCH_NAME == 'master') {
+                        DEPLOY_TO = 'prod'
+                    } else if (env.BRANCH_NAME == 'develop') {
+                        DEPLOY_TO = 'dev'
+                    } else if (env.BRANCH_NAME == 'qa') {
+                        DEPLOY_TO = 'qa'
+                    }
+                }
+            }
+        }
+
+        // ... (other stages remain the same)
+
+        stage('Deploy FLOWWORKS_SERVER') {
+            agent { label (DEPLOY_TO == 'prod' ? 'master' : 'ubuntu-slave') }
+            when { expression { return FLOWWORKS_SERVER_UPDATED; } }
+            steps {
+                script {
+                    slackSend(channel: "배포", teamDomain: "indinity", tokenCredentialId: "indinity_slack_token", message: "[${env.BRANCH_NAME}][FLOWWORKS_SERVER] 배포중...")
+                    if (env.BRANCH_NAME == 'develop') {
+                        sh "./scripts/deploy_flowworks_pm2_server.sh $DEPLOY_TO"
+                    } else if (env.BRANCH_NAME == 'master') {
+                        sh "./scripts/deploy_server_ecs.sh $DEPLOY_TO"
+                    }
+                }
+            }
+        }
+
+        // ... (other stages remain the same)
+    }
+
+    post {
+        success {
+            slackSend(channel: "배포", teamDomain: "indinity", tokenCredentialId: "indinity_slack_token", message: "[$project_name_ko $branch_name] 배포 완료.")
+        }
+        failure {
+            slackSend(color: "warning", channel: "배포", teamDomain: "indinity", tokenCredentialId: "indinity_slack_token", message: "[$project_name_ko $branch_name] 배포 실패.")
+        }
+    }
+}
